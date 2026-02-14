@@ -28,10 +28,10 @@ A security scanner for [OpenClaw](https://github.com/openclaw/openclaw) skills �
 ```bash
 # Clone into your OpenClaw skills directory
 git clone https://github.com/lida408/openclaw-skill-security-pro.git \
-  ~/.openclaw/workspace/skills/security-audit
+  ~/.openclaw/workspace/skills/security-pro
 
 # Scan your skills
-bash ~/.openclaw/workspace/skills/security-audit/scripts/audit.sh ~/.openclaw/workspace/skills/
+bash ~/.openclaw/workspace/skills/security-pro/scripts/audit.sh ~/.openclaw/workspace/skills/
 ```
 
 #### Standalone
@@ -141,7 +141,7 @@ Add to your `TOOLS.md` to enforce scanning on every skill install:
 ```markdown
 ## 🛡️ Skill Security Audit (mandatory)
 Every new skill must be scanned before activation:
-1. Run: `bash skills/security-audit/scripts/audit.sh <new-skill-path>`
+1. Run: `bash skills/security-pro/scripts/audit.sh <new-skill-path>`
 2. Exit 0 → safe to use
 3. Exit 1 → report warnings to user
 4. Exit 2 → block activation, notify user
@@ -149,7 +149,7 @@ Every new skill must be scanned before activation:
 
 Schedule daily scans via OpenClaw cron:
 ```
-0 4 * * * bash skills/security-audit/scripts/audit.sh /path/to/skills
+0 4 * * * bash skills/security-pro/scripts/audit.sh /path/to/skills
 ```
 
 ---
@@ -178,10 +178,10 @@ Schedule daily scans via OpenClaw cron:
 ```bash
 # 克隆到 OpenClaw 技能目录
 git clone https://github.com/lida408/openclaw-skill-security-pro.git \
-  ~/.openclaw/workspace/skills/security-audit
+  ~/.openclaw/workspace/skills/security-pro
 
 # 扫描你的技能
-bash ~/.openclaw/workspace/skills/security-audit/scripts/audit.sh ~/.openclaw/workspace/skills/
+bash ~/.openclaw/workspace/skills/security-pro/scripts/audit.sh ~/.openclaw/workspace/skills/
 ```
 
 #### 独立使用
@@ -277,7 +277,7 @@ path/to/file.sh:pipe-execution
 ```markdown
 ## 🛡️ Skill 安全审计（强制规则）
 每个新 skill 必须扫描后才能启用：
-1. 运行：`bash skills/security-audit/scripts/audit.sh <新skill路径>`
+1. 运行：`bash skills/security-pro/scripts/audit.sh <新skill路径>`
 2. 退出码 0 → 安全可用
 3. 退出码 1 → 告知用户警告内容
 4. 退出码 2 → 禁止启用，通知用户
@@ -285,7 +285,7 @@ path/to/file.sh:pipe-execution
 
 通过 OpenClaw cron 设置每日自动巡检：
 ```
-0 4 * * * bash skills/security-audit/scripts/audit.sh /path/to/skills
+0 4 * * * bash skills/security-pro/scripts/audit.sh /path/to/skills
 ```
 
 ---
