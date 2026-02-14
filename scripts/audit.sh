@@ -2,14 +2,14 @@
 set -uo pipefail
 
 # ============================================================
-# 🦒 Giraffe Guard v3.0.0 — 长颈鹿卫士
+# 🦒 Giraffe Guard v3.1.0 — 长颈鹿卫士
 # OpenClaw Skill Security Auditor
 # Scan skill directories for supply chain attacks and malicious code
 # Compatible with macOS (BSD) and Linux (GNU)
 # Zero dependencies: only uses bash, grep, sed, find, file, awk, readlink, perl
 # ============================================================
 
-VERSION="3.0.0"
+VERSION="3.1.0"
 
 # --- Color definitions ---
 RED='\033[0;31m'
@@ -23,10 +23,15 @@ NC='\033[0m'
 # --- Parameters ---
 VERBOSE=false
 JSON_OUTPUT=false
+SARIF_OUTPUT=false
+STRICT_MODE=false
 WHITELIST_FILE=""
 TARGET_DIR=""
 CONTEXT_LINES=2  # context lines for --verbose
+MIN_SEVERITY=""      # "", "WARNING", "CRITICAL"
+FAIL_ON=""           # "", "WARNING", "CRITICAL"
 declare -a SKIP_DIRS=()
+declare -a SKIP_RULES=()
 
 SELF_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
@@ -50,23 +55,30 @@ OpenClaw Skill Security Auditor v${VERSION}
 Scan skill directories for supply chain attacks and malicious code.
 
 Options:
-  --verbose       Show detailed findings with context lines
-  --json          Output JSON report
-  --whitelist F   Specify whitelist file
-  --context N     Context lines (default: 2, used with --verbose)
-  --skip-dir D    Skip directory name (repeatable, e.g. --skip-dir node_modules)
-  --version       Show version
-  -h, --help      Show help
+  --verbose         Show detailed findings with context lines
+  --json            Output JSON report
+  --sarif           Output SARIF format (for GitHub Code Scanning)
+  --strict          Enable strict mode (high entropy detection)
+  --whitelist F     Specify whitelist file
+  --context N       Context lines (default: 2, used with --verbose)
+  --skip-dir D      Skip directory name (repeatable)
+  --skip-rule R     Skip a specific rule (repeatable, e.g. --skip-rule pipe-execution)
+  --min-severity S  Minimum severity to report: INFO, WARNING, CRITICAL
+  --fail-on S       Set exit code threshold: WARNING (default) or CRITICAL
+  --version         Show version
+  -h, --help        Show help
 
 Examples:
   $(basename "$0") /path/to/skills
   $(basename "$0") --verbose --json /path/to/skills
   $(basename "$0") --whitelist whitelist.txt /path/to/skills
   $(basename "$0") --skip-dir node_modules --skip-dir vendor /path/to/skills
+  $(basename "$0") --skip-rule pipe-execution --min-severity WARNING /path/to/skills
+  $(basename "$0") --sarif /path/to/skills > results.sarif
 
 Exit codes:
-  0  Clean (no findings)
-  1  Warnings found
+  0  Clean (no findings above threshold)
+  1  Warnings found (or above --fail-on threshold)
   2  Critical findings found
 EOF
     exit 0
@@ -77,10 +89,15 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --verbose) VERBOSE=true; shift ;;
         --json) JSON_OUTPUT=true; shift ;;
+        --sarif) SARIF_OUTPUT=true; JSON_OUTPUT=true; shift ;;
+        --strict) STRICT_MODE=true; shift ;;
         --whitelist) WHITELIST_FILE="$2"; shift 2 ;;
         --context) CONTEXT_LINES="$2"; shift 2 ;;
         --skip-dir) SKIP_DIRS+=("$2"); shift 2 ;;
-        --version) echo "security-audit v${VERSION}"; exit 0 ;;
+        --skip-rule) SKIP_RULES+=("$2"); shift 2 ;;
+        --min-severity) MIN_SEVERITY="$2"; shift 2 ;;
+        --fail-on) FAIL_ON="$2"; shift 2 ;;
+        --version) echo "giraffe-guard v${VERSION}"; exit 0 ;;
         -h|--help) usage ;;
         -*) echo "Unknown option: $1"; exit 1 ;;
         *) TARGET_DIR="$1"; shift ;;
@@ -176,6 +193,95 @@ is_doc_context() {
     return 1
 }
 
+# --- Remediation map ---
+get_remediation() {
+    local rule="$1"
+    case "$rule" in
+        pipe-execution*) echo "Download file first, verify checksum, then execute" ;;
+        base64-decode-pipe|base64-echo-decode) echo "Avoid piping decoded base64 to shell; decode to file and inspect first" ;;
+        security-bypass*) echo "Remove Gatekeeper/SIP bypass; use proper code signing" ;;
+        dangerous-permissions) echo "Use least-privilege permissions; avoid chmod 777 or setuid" ;;
+        tor-onion-address) echo "Remove .onion addresses; use standard domains" ;;
+        reverse-shell) echo "Remove reverse shell patterns; use proper remote access tools" ;;
+        suspicious-network-ip) echo "Use domain names instead of direct IP addresses" ;;
+        netcat-listener) echo "Remove netcat listeners; use proper service management" ;;
+        covert-exec-eval) echo "Replace eval() with safer alternatives (arrays, parameter expansion)" ;;
+        covert-exec-python) echo "Use subprocess with explicit args list instead of os.system()" ;;
+        covert-exec-child-process) echo "Validate and sanitize all input before passing to child_process" ;;
+        file-type-disguise) echo "Remove or rename file to match its actual binary type" ;;
+        ssh-key-exfiltration) echo "Never transmit SSH keys over network; use ssh-agent forwarding" ;;
+        cloud-credential-access) echo "Use IAM roles/service accounts instead of credential files" ;;
+        env-exfiltration|env-dump-exfiltration) echo "Never send env vars over network; use secret managers" ;;
+        anti-sandbox) echo "Remove anti-debug techniques; they indicate malicious intent" ;;
+        covert-downloader*) echo "Use package managers instead of one-liner downloaders" ;;
+        persistence-launchagent) echo "Remove LaunchAgent creation; use proper installation methods" ;;
+        cron-injection) echo "Document scheduled tasks; avoid injecting cron entries silently" ;;
+        hidden-executable) echo "Remove hidden executable files or document their purpose" ;;
+        hex-obfuscation|unicode-obfuscation) echo "Replace encoded strings with readable code" ;;
+        string-concat-bypass) echo "Remove string concatenation used to evade detection" ;;
+        symlink-*) echo "Remove symlinks to sensitive locations; use proper file references" ;;
+        env-file-leak) echo "Add .env to .gitignore; use .env.example with placeholders" ;;
+        typosquat-*) echo "Verify package name spelling against official registry" ;;
+        custom-registry|custom-pip-source) echo "Use official registries (npmjs.org, pypi.org)" ;;
+        malicious-postinstall|malicious-setup-py) echo "Review lifecycle scripts; remove network/exec calls from install hooks" ;;
+        git-hooks) echo "Review hook content; remove if not intentional" ;;
+        sensitive-file-leak) echo "Add to .gitignore; rotate compromised credentials immediately" ;;
+        skillmd-prompt-injection) echo "Remove prompt injection patterns from SKILL.md" ;;
+        skillmd-dangerous-command) echo "Remove destructive commands from SKILL.md" ;;
+        skillmd-privilege-escalation) echo "Remove sudo/root requirements from SKILL.md" ;;
+        dockerfile-privileged) echo "Remove --privileged; use specific capabilities instead" ;;
+        dockerfile-sensitive-mount) echo "Avoid mounting host /etc, /root, /home into containers" ;;
+        dockerfile-host-network) echo "Use bridge networking instead of --net=host" ;;
+        zero-width-chars|embedded-bom) echo "Remove hidden Unicode characters; they may conceal malicious content" ;;
+        hardcoded-aws-key) echo "Use IAM roles or AWS Secrets Manager instead of hardcoded keys" ;;
+        hardcoded-github-token) echo "Use GITHUB_TOKEN from Actions or GitHub App tokens" ;;
+        hardcoded-stripe-key) echo "Use environment variables for Stripe keys" ;;
+        hardcoded-slack-*) echo "Use environment variables for Slack tokens/webhooks" ;;
+        hardcoded-generic-secret) echo "Move secrets to environment variables or a secret manager" ;;
+        hardcoded-private-key) echo "Store private keys in secure key management systems" ;;
+        actions-unpinned) echo "Pin action to specific commit SHA: uses: owner/action@<sha>" ;;
+        actions-script-injection) echo "Use intermediate env variable instead of direct expression injection" ;;
+        actions-excessive-permissions) echo "Use least-privilege: set specific read/write per scope" ;;
+        high-entropy-string) echo "Verify if this is a hardcoded secret; move to env var if so" ;;
+        build-script-download) echo "Vendor dependencies; avoid downloading during build" ;;
+        build-script-obfuscation) echo "Remove obfuscated code from build scripts" ;;
+        lifecycle-hook-obfuscated) echo "Remove obfuscated commands from lifecycle hooks" ;;
+        gemfile-untrusted-source) echo "Use official RubyGems or well-known git hosts" ;;
+        pyproject-suspicious-hook) echo "Review build hooks in pyproject.toml for suspicious commands" ;;
+        *) echo "" ;;
+    esac
+}
+
+# --- Skip-rule check ---
+is_rule_skipped() {
+    local rule="$1"
+    for sr in "${SKIP_RULES[@]+"${SKIP_RULES[@]}"}"; do
+        if [[ "$rule" == "$sr" || "$rule" == "${sr}"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# --- Severity filter ---
+severity_rank() {
+    case "$1" in
+        INFO) echo 0 ;;
+        WARNING) echo 1 ;;
+        CRITICAL) echo 2 ;;
+        *) echo 0 ;;
+    esac
+}
+
+passes_severity_filter() {
+    local level="$1"
+    if [[ -z "$MIN_SEVERITY" ]]; then return 0; fi
+    local level_rank min_rank
+    level_rank=$(severity_rank "$level")
+    min_rank=$(severity_rank "$MIN_SEVERITY")
+    [[ $level_rank -ge $min_rank ]]
+}
+
 # --- Finding recorder ---
 add_finding() {
     local level="$1"      # CRITICAL / WARNING / INFO
@@ -183,6 +289,12 @@ add_finding() {
     local lineno="$3"
     local rule="$4"
     local content="$5"
+
+    # Skip-rule check
+    if is_rule_skipped "$rule"; then return 0; fi
+
+    # Severity filter
+    if ! passes_severity_filter "$level"; then return 0; fi
 
     # Whitelist check
     local wl_status=""
@@ -196,10 +308,18 @@ add_finding() {
             WARNING)  echo $(( $(cat "$TMPDIR_AUDIT/warning") + 1 )) > "$TMPDIR_AUDIT/warning" ;;
             INFO)     echo $(( $(cat "$TMPDIR_AUDIT/info") + 1 )) > "$TMPDIR_AUDIT/info" ;;
         esac
+        # Track per-file findings for top offenders
+        echo "$filepath" >> "$TMPDIR_AUDIT/file_hits"
     fi
 
+    # Get remediation hint
+    local fix_hint
+    fix_hint=$(get_remediation "$rule")
+
     if [[ "$JSON_OUTPUT" == true ]]; then
-        echo "{\"level\":\"$(json_escape "$level")\",\"file\":\"$(json_escape "$filepath")\",\"line\":$lineno,\"rule\":\"$(json_escape "$rule")\",\"content\":\"$(json_escape "$content")\",\"whitelisted\":$([ "$wl_status" = "WHITELISTED" ] && echo true || echo false)}" >> "$FINDINGS_FILE"
+        local json_fix=""
+        [[ -n "$fix_hint" ]] && json_fix=",\"remediation\":\"$(json_escape "$fix_hint")\""
+        echo "{\"level\":\"$(json_escape "$level")\",\"file\":\"$(json_escape "$filepath")\",\"line\":$lineno,\"rule\":\"$(json_escape "$rule")\",\"content\":\"$(json_escape "$content")\",\"whitelisted\":$([ "$wl_status" = "WHITELISTED" ] && echo true || echo false)${json_fix}}" >> "$FINDINGS_FILE"
     else
         local color tag
         case "$level" in
@@ -212,6 +332,9 @@ add_finding() {
         else
             echo -e "  ${color}${tag} ${level}${NC} | ${BOLD}${filepath}:${lineno}${NC} | ${CYAN}${rule}${NC}"
             echo -e "     ${DIM}${content}${NC}"
+            if [[ -n "$fix_hint" ]]; then
+                echo -e "     ${GREEN}>> FIX: ${fix_hint}${NC}"
+            fi
             if [[ "$VERBOSE" == true && "$lineno" != "0" ]]; then
                 echo -e "${DIM}$(get_context "$filepath" "$lineno")${NC}"
                 echo ""
@@ -680,6 +803,175 @@ check_zero_width_chars() {
     fi
 }
 
+# Rule 23: Hardcoded secret detection (CRITICAL)
+check_hardcoded_secrets() {
+    local file="$1"
+    local ext="${file##*.}"
+    # Skip binary-like extensions and doc files
+    case "$ext" in
+        md|txt|rst) return 0 ;;
+    esac
+
+    # AWS Access Key (always starts with AKIA)
+    grep -n -E 'AKIA[0-9A-Z]{16}' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "CRITICAL" "$file" "$lineno" "hardcoded-aws-key" "AWS access key detected: $content"
+    done
+
+    # GitHub Token (ghp_, gho_, ghs_, ghr_, github_pat_)
+    grep -n -E '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{22,}' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "CRITICAL" "$file" "$lineno" "hardcoded-github-token" "GitHub token detected"
+    done
+
+    # Stripe secret/restricted key
+    grep -n -E '(sk|rk)_live_[A-Za-z0-9]{20,}' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "CRITICAL" "$file" "$lineno" "hardcoded-stripe-key" "Stripe live key detected"
+    done
+
+    # Slack bot token / webhook
+    grep -n -E 'xox[baprs]-[0-9]{10,}-[A-Za-z0-9]{20,}' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "CRITICAL" "$file" "$lineno" "hardcoded-slack-token" "Slack token detected"
+    done
+    grep -n -E 'hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "WARNING" "$file" "$lineno" "hardcoded-slack-webhook" "Slack webhook URL detected"
+    done
+
+    # Generic password/secret/api_key assignments in code
+    grep -n -E '(password|passwd|secret|api_key|apikey|access_token|auth_token|private_key)\s*[=:]\s*["\x27][A-Za-z0-9+/=_-]{16,}["\x27]' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        # Exclude common patterns
+        case "$content" in
+            *placeholder*|*example*|*changeme*|*your_*|*TODO*|*REPLACE*|*xxx*|*sample*) continue ;;
+            *test*|*mock*|*fake*|*dummy*) continue ;;
+        esac
+        if is_doc_context "$file" "$lineno"; then continue; fi
+        add_finding "WARNING" "$file" "$lineno" "hardcoded-generic-secret" "Possible hardcoded secret: $content"
+    done
+
+    # Private key content in non-key files
+    local bname
+    bname=$(basename "$file")
+    case "$bname" in
+        *.pem|*.key|*.p12|*.pfx) ;; # Skip actual key files (covered by rule 19)
+        *)
+            grep -n -E 'BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+                add_finding "CRITICAL" "$file" "$lineno" "hardcoded-private-key" "Private key embedded in source file"
+            done
+            ;;
+    esac
+}
+
+# Rule 24: GitHub Actions workflow injection (WARNING / CRITICAL)
+check_github_actions() {
+    local file="$1"
+    local bname
+    bname=$(basename "$file")
+    local ext="${file##*.}"
+    # Only check YAML files under .github
+    [[ "$ext" != "yml" && "$ext" != "yaml" ]] && return 0
+    case "$file" in
+        */.github/workflows/*|*/.github/actions/*) ;;
+        *) return 0 ;;
+    esac
+
+    # Unpinned third-party actions (uses tag rather than SHA)
+    grep -n -E 'uses:\s+[^/]+/[^@]+@(main|master|latest|v[0-9]+(\.[0-9x]+)*)(\s|$)' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        # Exclude official actions
+        case "$content" in
+            *actions/checkout*|*actions/setup-*|*actions/upload-*|*actions/download-*|*actions/cache*|*actions/github-script*) continue ;;
+        esac
+        add_finding "WARNING" "$file" "$lineno" "actions-unpinned" "Third-party action not pinned to SHA: $content"
+    done
+
+    # Script injection via untrusted PR/issue context
+    grep -n -E '\$\{\{\s*github\.(event\.(pull_request|issue|comment|discussion)\.(body|title|head\.ref)|head_ref)' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "CRITICAL" "$file" "$lineno" "actions-script-injection" "Untrusted input in workflow expression: $content"
+    done
+
+    # Overly permissive token
+    grep -n -iE 'permissions:\s*write-all' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "WARNING" "$file" "$lineno" "actions-excessive-permissions" "Overly permissive token: $content"
+    done
+}
+
+# Rule 25: High entropy string detection (INFO, strict mode only)
+check_high_entropy() {
+    local file="$1"
+    [[ "$STRICT_MODE" != true ]] && return 0
+    local ext="${file##*.}"
+    # Only check source code files
+    case "$ext" in
+        sh|py|js|ts|rb|go|rs|java|c|cpp|h|hpp|swift|kt|lua|pl|cfg|ini|conf|toml|yaml|yml|json) ;;
+        *) return 0 ;;
+    esac
+
+    # Find strings of 20+ alphanumeric chars that look random (using awk for entropy)
+    grep -noE '[A-Za-z0-9+/=_-]{20,}' "$file" 2>/dev/null | head -20 | while IFS=: read -r lineno str; do
+        # Skip known non-secret patterns
+        case "$str" in
+            *AKIA*|*ghp_*|*sk_live*|*xox*) continue ;; # Already caught by rule 23
+            *abcdef*|*ABCDEF*|*12345*|*00000*) continue ;; # Sequential
+        esac
+        # Simple entropy check: count unique chars / total chars
+        local ucount tcount
+        tcount=${#str}
+        ucount=$(echo "$str" | fold -w1 | sort -u | wc -l | tr -d ' ')
+        # If unique chars > 60% of total and length >= 24, flag as high entropy
+        if [[ $tcount -ge 24 && $((ucount * 100 / tcount)) -ge 60 ]]; then
+            add_finding "INFO" "$file" "$lineno" "high-entropy-string" "High entropy string (${ucount}/${tcount} unique chars): ${str:0:40}..."
+        fi
+    done
+}
+
+# Rule 26: Obfuscated build scripts (WARNING)
+check_build_script_obfuscation() {
+    local file="$1"
+    local bname
+    bname=$(basename "$file")
+    case "$bname" in
+        Makefile|makefile|GNUmakefile|CMakeLists.txt|configure|configure.ac|meson.build) ;;
+        *) return 0 ;;
+    esac
+
+    # Downloads during build
+    grep -n -E '(curl|wget|fetch)\s+.*https?://' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "WARNING" "$file" "$lineno" "build-script-download" "Build script downloads remote content: $content"
+    done
+
+    # Obfuscated code in build files
+    grep -n -E '(\\x[0-9a-fA-F]{2}){4,}|eval\s+\$|xargs\s+sh|base64.*-d' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+        add_finding "WARNING" "$file" "$lineno" "build-script-obfuscation" "Obfuscated code in build script: $content"
+    done
+}
+
+# Rule 27: Enhanced lifecycle hooks (CRITICAL)
+check_enhanced_lifecycle() {
+    local file="$1"
+    local bname
+    bname=$(basename "$file")
+
+    # pyproject.toml: suspicious build hooks
+    if [[ "$bname" == "pyproject.toml" ]]; then
+        grep -n -iE '(exec|system|subprocess|urllib|urlopen|os\.system)\s*\(' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+            add_finding "CRITICAL" "$file" "$lineno" "pyproject-suspicious-hook" "Suspicious code in pyproject.toml: $content"
+        done
+    fi
+
+    # package.json: obfuscated lifecycle scripts
+    if [[ "$bname" == "package.json" ]]; then
+        grep -n -E '"(pre|post)(install|publish|test|version)"\s*:\s*".*\\\\x|base64|eval' "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+            add_finding "CRITICAL" "$file" "$lineno" "lifecycle-hook-obfuscated" "Obfuscated lifecycle script: $content"
+        done
+    fi
+
+    # Gemfile: untrusted git source
+    if [[ "$bname" == "Gemfile" ]]; then
+        grep -n -E "git.*://[^\"']*" "$file" 2>/dev/null | while IFS=: read -r lineno content; do
+            if ! echo "$content" | grep -qE '(github\.com|gitlab\.com|bitbucket\.org)'; then
+                add_finding "WARNING" "$file" "$lineno" "gemfile-untrusted-source" "Gem from non-standard git source: $content"
+            fi
+        done
+    fi
+}
+
 # ============================================================
 # Main Scan Logic
 # ============================================================
@@ -688,15 +980,21 @@ print_banner() {
     if [[ "$JSON_OUTPUT" != true ]]; then
         echo ""
         echo -e "${BOLD}╔═══════════════════════════════════════════════╗${NC}"
-        echo -e "${BOLD}║   🦒 Giraffe Guard v${VERSION} — 长颈鹿卫士        ║${NC}"
+        echo -e "${BOLD}║   🦒 Giraffe Guard v${VERSION} — 长颈鹿卫士       ║${NC}"
         echo -e "${BOLD}╚═══════════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "  ${CYAN}Target:${NC} $TARGET_DIR"
         [[ -n "$WHITELIST_FILE" ]] && echo -e "  ${CYAN}Whitelist:${NC} $WHITELIST_FILE (${#WHITELIST_ENTRIES[@]} entries)"
         [[ "$VERBOSE" == true ]] && echo -e "  ${CYAN}Verbose:${NC} context ${CONTEXT_LINES} lines"
+        [[ "$STRICT_MODE" == true ]] && echo -e "  ${CYAN}Strict:${NC} high entropy detection enabled"
         if [[ ${#SKIP_DIRS[@]} -gt 0 ]]; then
-            echo -e "  ${CYAN}Skipping:${NC} ${SKIP_DIRS[*]}"
+            echo -e "  ${CYAN}Skipping dirs:${NC} ${SKIP_DIRS[*]}"
         fi
+        if [[ ${#SKIP_RULES[@]} -gt 0 ]]; then
+            echo -e "  ${CYAN}Skipping rules:${NC} ${SKIP_RULES[*]}"
+        fi
+        [[ -n "$MIN_SEVERITY" ]] && echo -e "  ${CYAN}Min severity:${NC} $MIN_SEVERITY"
+        [[ -n "$FAIL_ON" ]] && echo -e "  ${CYAN}Fail on:${NC} $FAIL_ON"
         echo ""
         echo -e "${BOLD}-----------------------------------------------${NC}"
     fi
@@ -737,10 +1035,16 @@ scan_file() {
     check_skillmd_injection "$file"
     check_dockerfile_security "$file"
     check_zero_width_chars "$file"
+    check_hardcoded_secrets "$file"
+    check_github_actions "$file"
+    check_high_entropy "$file"
+    check_build_script_obfuscation "$file"
+    check_enhanced_lifecycle "$file"
 }
 
 main() {
     load_whitelist
+    touch "$TMPDIR_AUDIT/file_hits"
     print_banner
 
     # Build find arguments including --skip-dir exclusions (safe array, no eval)
@@ -807,8 +1111,37 @@ main() {
     wlc=$(cat "$TMPDIR_AUDIT/whitelisted")
     fsc=$(cat "$TMPDIR_AUDIT/files")
 
-    # --- Output results ---
-    if [[ "$JSON_OUTPUT" == true ]]; then
+    # --- SARIF output ---
+    if [[ "$SARIF_OUTPUT" == true ]]; then
+        echo '{'
+        echo '  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",'
+        echo '  "version": "2.1.0",'
+        echo '  "runs": [{'
+        echo '    "tool": {"driver": {"name": "Giraffe Guard", "version": "'"${VERSION}"'", "informationUri": "https://github.com/lida408/openclaw-skill-security-pro"}},'
+        echo '    "results": ['
+        if [[ -s "$FINDINGS_FILE" ]]; then
+            local first=true idx=0
+            while IFS= read -r jline; do
+                local sep=""
+                [[ "$first" != true ]] && sep=","
+                first=false
+                # Parse fields from JSON line
+                local s_level s_file s_line s_rule s_msg
+                s_level=$(echo "$jline" | sed 's/.*"level":"\([^"]*\)".*/\1/')
+                s_file=$(echo "$jline" | sed 's/.*"file":"\([^"]*\)".*/\1/')
+                s_line=$(echo "$jline" | sed 's/.*"line":\([0-9]*\).*/\1/')
+                s_rule=$(echo "$jline" | sed 's/.*"rule":"\([^"]*\)".*/\1/')
+                s_msg=$(echo "$jline" | sed 's/.*"content":"\([^"]*\)".*/\1/')
+                local sarif_level="warning"
+                [[ "$s_level" == "CRITICAL" ]] && sarif_level="error"
+                [[ "$s_level" == "INFO" ]] && sarif_level="note"
+                echo "${sep}      {\"ruleId\":\"${s_rule}\",\"level\":\"${sarif_level}\",\"message\":{\"text\":\"${s_msg}\"},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":\"${s_file}\"},\"region\":{\"startLine\":${s_line}}}}]}"
+            done < "$FINDINGS_FILE"
+        fi
+        echo '    ]'
+        echo '  }]'
+        echo '}'
+    elif [[ "$JSON_OUTPUT" == true ]]; then
         echo "{"
         echo "  \"version\": \"${VERSION}\","
         echo "  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
@@ -858,6 +1191,15 @@ main() {
         fi
         echo ""
 
+        # Top offenders (C5)
+        if [[ $fc -gt 0 && -s "$TMPDIR_AUDIT/file_hits" ]]; then
+            echo -e "${BOLD}  Top files by findings:${NC}"
+            sort "$TMPDIR_AUDIT/file_hits" | uniq -c | sort -rn | head -5 | while read -r count filepath; do
+                echo -e "    ${YELLOW}${count}${NC} findings: ${filepath}"
+            done
+            echo ""
+        fi
+
         if [[ $fc -eq 0 ]]; then
             echo -e "  ${GREEN}${BOLD}✅ PASS - No security issues found.${NC}"
         elif [[ $cc -gt 0 ]]; then
@@ -870,14 +1212,27 @@ main() {
         echo ""
     fi
 
-    # Exit codes
-    if [[ $cc -gt 0 ]]; then
-        exit 2
-    elif [[ $wc -gt 0 ]]; then
-        exit 1
+    # Exit codes (respect --fail-on)
+    if [[ -n "$FAIL_ON" ]]; then
+        local fail_rank
+        fail_rank=$(severity_rank "$FAIL_ON")
+        if [[ $cc -gt 0 && $(severity_rank "CRITICAL") -ge $fail_rank ]]; then
+            exit 2
+        elif [[ $wc -gt 0 && $(severity_rank "WARNING") -ge $fail_rank ]]; then
+            exit 1
+        else
+            exit 0
+        fi
     else
-        exit 0
+        if [[ $cc -gt 0 ]]; then
+            exit 2
+        elif [[ $wc -gt 0 ]]; then
+            exit 1
+        else
+            exit 0
+        fi
     fi
 }
 
 main
+
