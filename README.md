@@ -11,6 +11,8 @@
 
 A security scanner for [OpenClaw](https://github.com/openclaw/openclaw) skills — detect supply chain attacks, malicious code, and suspicious patterns before they compromise your system.
 
+Giraffe Guard helps protect AI-agent skill ecosystems by scanning third-party OpenClaw skills before installation, reducing supply-chain, secret leakage, and malicious-code risks.
+
 > Born from a real supply chain poisoning incident in the OpenClaw community. Stand tall, stay safe. 🦒
 
 ### Features
@@ -191,6 +193,8 @@ Every new skill must be scanned before activation:
 
 [OpenClaw](https://github.com/openclaw/openclaw) 技能安全扫描器 —— 在供应链攻击、恶意代码和可疑模式危害你的系统之前将其检测出来。
 
+Giraffe Guard 通过在安装前扫描第三方 OpenClaw skills，帮助降低 AI agent skill 生态中的供应链、密钥泄露和恶意代码风险。
+
 > 诞生于 OpenClaw 社区中一起真实的供应链投毒事件。站得高，看得远。🦒
 
 ### 特性
@@ -294,14 +298,14 @@ bash scripts/audit.sh --list-rules
 
 [Apache License 2.0](LICENSE)
 
+## Security / 安全
+
+Please report suspected vulnerabilities privately. See [SECURITY.md](SECURITY.md).
+
+如需报告疑似安全漏洞，请优先使用私密渠道，参见 [SECURITY.md](SECURITY.md)。
+
 ## Contributing / 贡献
 
-Issues and PRs welcome! / 欢迎提交 Issue 和 PR！
+Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-When adding new detection rules / 添加新检测规则时请：
-
-1. Add the check function in `scripts/audit.sh` / 在脚本中添加检测函数
-2. Call it from `scan_file()` or `main()` / 在扫描流程中调用
-3. Test with `--list-rules` to verify rule is listed / 用 `--list-rules` 验证规则已列出
-4. Test against both clean skills and malicious samples / 用正常和恶意样本测试
-5. Ensure zero false positives via self-scan / 通过自扫描确保零误报
+欢迎提交 Issue 和 PR。贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
