@@ -2,14 +2,14 @@
 set -uo pipefail
 
 # ============================================================
-# 🦒 Giraffe Guard v3.1.0 — 长颈鹿卫士
+# 🦒 Giraffe Guard v3.1.1 — 长颈鹿卫士
 # OpenClaw Skill Security Auditor
 # Scan skill directories for supply chain attacks and malicious code
 # Compatible with macOS (BSD) and Linux (GNU)
 # Zero dependencies: only uses bash, grep, sed, find, file, awk, readlink, perl
 # ============================================================
 
-VERSION="3.1.0"
+VERSION="3.1.1"
 
 # --- Color definitions ---
 RED='\033[0;31m'
@@ -1309,7 +1309,7 @@ main() {
         echo '  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",'
         echo '  "version": "2.1.0",'
         echo '  "runs": [{'
-        echo '    "tool": {"driver": {"name": "Giraffe Guard", "version": "'"${VERSION}"'", "informationUri": "https://github.com/lida408/openclaw-skill-security-pro"}},'
+        echo '    "tool": {"driver": {"name": "Giraffe Guard", "version": "'"${VERSION}"'", "informationUri": "https://github.com/lida408/openclaw-skill-giraffe-guard"}},'
         echo '    "results": ['
         if [[ -s "$FINDINGS_FILE" ]]; then
             local first=true idx=0
@@ -1447,4 +1447,3 @@ main() {
 }
 
 main
-
