@@ -7,6 +7,7 @@
 - Add `CONTRIBUTING.md` with rule contribution and PR guidance.
 - Update `SKILL.md` so the documented rule count matches the current scanner.
 - Fix the SARIF tool metadata repository URL.
+- Declare GitHub Actions permissions for PR scan comments.
 - Add clearer README positioning for OpenClaw skill supply-chain security.
 
 ## v3.1.0
